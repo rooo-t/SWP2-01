@@ -23,5 +23,6 @@ int toggle_state(int toggle) {
   } 
   else if(toggle == 1) {
     return 0;
+  }
 }
 //return toggle == 0 ? 1 : 0;
