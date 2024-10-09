@@ -1,0 +1,109 @@
+#include <Servo.h>
+
+// 핀 번호 정의
+#define PIN_LED   9   // LED active-low
+#define PIN_TRIG  12  // 초음파 센서 TRIGGER
+#define PIN_ECHO  13  // 초음파 센서 ECHO
+#define PIN_SERVO 10  // 서보 모터
+
+// 초음파 센서 관련 설정
+#define SND_VEL 346.0     // 음속 (단위: m/s)
+#define INTERVAL 25       // 샘플링 간격 (단위: ms)
+#define PULSE_DURATION 10 // 초음파 펄스 지속 시간 (단위: us)
+#define _DIST_MIN 180.0   // 최소 거리 (단위: mm)
+#define _DIST_MAX 360.0   // 최대 거리 (단위: mm)
+
+#define TIMEOUT ((INTERVAL / 2) * 1000.0) // 에코 대기 시간 (단위: us)
+#define SCALE (0.001 * 0.5 * SND_VEL)     // 시간에서 거리로 변환하는 계수
+
+#define _EMA_ALPHA 0.5    // EMA 필터 가중치 (0~1)
+
+// Target Distance
+#define _TARGET_LOW  250.0
+#define _TARGET_HIGH 290.0
+
+// 서보 모터 동작을 위한 duty cycle 설정
+#define _DUTY_MIN 400    // 서보 0도 위치
+#define _DUTY_NEU 1450   // 서보 90도 위치 (중립)
+#define _DUTY_MAX 2600   // 서보 180도 위치
+
+// 글로벌 변수
+float dist_ema, dist_prev = _DIST_MAX; // EMA 필터 값
+unsigned long last_sampling_time;       // 샘플링 시간
+
+Servo myservo;
+
+void setup() {
+  // GPIO 핀 초기화
+  pinMode(PIN_LED, OUTPUT);
+  pinMode(PIN_TRIG, OUTPUT);    // 초음파 센서 TRIGGER 핀
+  pinMode(PIN_ECHO, INPUT);     // 초음파 센서 ECHO 핀
+  digitalWrite(PIN_TRIG, LOW);  // 초음파 센서 끔
+
+  myservo.attach(PIN_SERVO);    // 서보 모터 연결
+  myservo.writeMicroseconds(_DUTY_NEU); // 서보 초기화 (90도)
+
+  dist_prev = _DIST_MIN; // raw distance output from USS (unit: mm)
+
+  // 시리얼 통신 초기화
+  Serial.begin(57600);
+}
+
+void loop() {
+  float dist_raw;
+
+  // 다음 샘플링 시간이 될 때까지 대기
+  if (millis() < (last_sampling_time + INTERVAL))
+    return;
+
+  dist_raw = USS_measure(PIN_TRIG, PIN_ECHO); // 거리 측정
+
+  // 측정 값이 최소 또는 최대 범위를 벗어난 경우 처리
+  if ((dist_raw == 0.0) || (dist_raw > _DIST_MAX)) {
+    dist_raw = dist_prev;   
+    dist_raw = 360;    // 최대값으로 설정
+    digitalWrite(PIN_LED, 1);       // LED OFF
+  } else if (dist_raw < _DIST_MIN) {
+    dist_raw = dist_prev;  
+    digitalWrite(PIN_LED, 1);       // LED OFF
+  } else {    
+    dist_prev = dist_raw; // 이전 거리값 업데이트
+    digitalWrite(PIN_LED, 0);       // LED ON
+  }
+
+  // EMA 필터 적용
+  dist_ema = _EMA_ALPHA * dist_raw + (1 - _EMA_ALPHA) * dist_prev;
+
+  // 서보 위치를 거리 값에 비례하여 조정
+  int servo_position;
+  if(dist_ema < _TARGET_LOW) {
+    servo_position = _DUTY_MIN;  // 최소 거리 이하일 경우 서보를 최소로 설정
+  } else if(dist_ema < _TARGET_HIGH) {
+    // 거리 값에 따라 서보 위치를 선형적으로 계산
+    servo_position = map(dist_ema, _TARGET_LOW, _TARGET_HIGH, _DUTY_MIN, _DUTY_MAX);
+  } else {
+    servo_position = _DUTY_MAX;  // 최대 거리 이상일 경우 서보를 최대 위치로 설정
+  }
+
+  // 계산된 서보 위치로 서보를 제어
+  myservo.writeMicroseconds(servo_position);
+
+  // 거리와 서보 각도를 시리얼 모니터에 출력
+  Serial.print("Distance: ");
+  Serial.print(dist_ema);
+  Serial.print(" mm, Servo Duty: ");
+  Serial.println(servo_position);
+
+  // 샘플링 시간 업데이트
+  last_sampling_time += INTERVAL;
+}
+
+// 초음파 센서로부터 거리 측정 (단위: mm)
+float USS_measure(int TRIG, int ECHO)
+{
+  digitalWrite(TRIG, HIGH);
+  delayMicroseconds(PULSE_DURATION);
+  digitalWrite(TRIG, LOW);
+
+  return pulseIn(ECHO, HIGH, TIMEOUT) * SCALE; // 시간 -> 거리 변환 (단위: mm)
+}
